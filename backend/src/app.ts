@@ -17,6 +17,16 @@ const messageSchema = z.object({
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
+const recognitionSchema = z.object({
+  input: z.string().min(1),
+});
+
+const ttsSchema = z.object({
+  text: z.string().trim().min(1).max(5000),
+  voice: z.string().trim().min(1).max(200).optional(),
+  language: z.string().trim().min(2).max(20).optional(),
+});
+
 const idParamsSchema = z.object({
   conversationId: z.string().uuid(),
 });
@@ -116,8 +126,59 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
     return { conversationId: parsed.data.conversationId, status: "ended" };
   });
 
-  // AI service handles are intentionally exposed only inside the app context for
-  // integration code. HTTP provider credentials remain outside the route layer.
+  // Provider-neutral AI endpoints. The concrete implementation is injected by
+  // the AI/integration members, keeping provider credentials and SDKs out of routes.
+  app.post("/api/v1/ai/sign/recognize", async (request, reply) => {
+    const parsed = recognitionSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.badRequest({ message: "Invalid sign recognition payload", issues: parsed.error.issues });
+    }
+
+    try {
+      const result = await ai.signRecognition.recognizeSign(parsed.data.input);
+      return { result };
+    } catch (error) {
+      const code = getErrorCode(error);
+      if (code === "SIGN_AI_NOT_CONFIGURED") return reply.serviceUnavailable("Sign recognition is not configured");
+      throw error;
+    }
+  });
+
+  app.post("/api/v1/ai/speech/recognize", async (request, reply) => {
+    const parsed = recognitionSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.badRequest({ message: "Invalid speech recognition payload", issues: parsed.error.issues });
+    }
+
+    try {
+      const result = await ai.speechRecognition.recognizeSpeech(parsed.data.input);
+      return { result };
+    } catch (error) {
+      const code = getErrorCode(error);
+      if (code === "SPEECH_AI_NOT_CONFIGURED") return reply.serviceUnavailable("Speech recognition is not configured");
+      throw error;
+    }
+  });
+
+  app.post("/api/v1/ai/tts", async (request, reply) => {
+    const parsed = ttsSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.badRequest({ message: "Invalid text-to-speech payload", issues: parsed.error.issues });
+    }
+
+    try {
+      const result = await ai.textToSpeech.synthesizeSpeech(parsed.data.text, {
+        voice: parsed.data.voice,
+        language: parsed.data.language,
+      });
+      return { result };
+    } catch (error) {
+      const code = getErrorCode(error);
+      if (code === "TTS_NOT_CONFIGURED") return reply.serviceUnavailable("Text-to-speech is not configured");
+      throw error;
+    }
+  });
+
   app.decorate("aiServices", ai);
 
   app.setErrorHandler((error, _request, reply) => {
@@ -135,6 +196,5 @@ export async function buildApp(options: AppOptions = {}): Promise<FastifyInstanc
 }
 
 function requestLogError(error: unknown): void {
-  // Avoid leaking provider credentials or arbitrary object values into HTTP errors.
   if (process.env.NODE_ENV !== "test") console.error(error instanceof Error ? error.message : "Unknown error");
 }
